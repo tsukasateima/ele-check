@@ -1,0 +1,52 @@
+.recursoin-drop-form {
+  display: flex;
+  justify-content: space-between;
+
+  .left-form-container {
+    width: 40%;
+  }
+
+  .right-info-container {
+    display: flex;
+    flex-wrap: wrap;
+    width: 55%;
+    padding: 10px;
+    font-size: 12px;
+
+    .card-item {
+      width: 40%;
+      margin: 0 10px 10px 0;
+
+      span {
+        display: block;
+        margin-bottom: 10px;
+      }
+    }
+  }
+
+  .info-container {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 20px;
+  }
+}
+
+.txt-files-list-item {
+  display: flex;
+  justify-content: space-between;
+}
+
+.father-common-check-collapse {
+  margin-top: 20px;
+}
+
+.chart-container {
+  width: 80%;
+  height: 100vh;
+  background-color: rgb(203 230 196);
+}
+
+.offspring-pack-log {
+  margin-bottom: 10px;
+}
