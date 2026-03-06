@@ -1,43 +1,5 @@
 import { ipcRenderer, contextBridge } from "electron";
 
-// 类型声明（避免 TS 报错）
-declare global {
-  interface Window {
-    electronFs: {
-      persistPath: (key: string, path: string) => Promise<boolean>;
-      restorePath: (key: string) => Promise<string | null>;
-      removePath: (key: string) => Promise<boolean>;
-    };
-  }
-}
-// 新增：暴露 electronFs API（包含 showDirectoryPicker）
-contextBridge.exposeInMainWorld("electronFs", {
-  removePath: async (key: string) => {
-    return await ipcRenderer.invoke("fs:remove-path", key);
-  },
-  // 新增：文件夹选择方法
-  showDirectoryPicker: async () => {
-    return await ipcRenderer.invoke("dialog:open-directory");
-  },
-
-  // 持久化路径
-  persistPath: async (key: string, dirPath: string) => {
-    try {
-      return await ipcRenderer.invoke("fs:persist-path", { key, dirPath });
-    } catch (error) {
-      console.error("持久化路径失败：", error);
-      throw error; // 抛出错误让渲染进程捕获
-    }
-  },
-  restorePath: async (key: string) => {
-    try {
-      return await ipcRenderer.invoke("fs:restore-path", key);
-    } catch (error) {
-      console.error("恢复路径失败：", error);
-      throw error;
-    }
-  }
-});
 // --------- Expose some API to the Renderer process ---------
 contextBridge.exposeInMainWorld("ipcRenderer", {
   on(...args: Parameters<typeof ipcRenderer.on>) {
@@ -156,5 +118,17 @@ domReady().then(appendLoading);
 window.onmessage = ev => {
   ev.data.payload === "removeLoading" && removeLoading();
 };
+
+// ========== 新增：文件夹操作API ==========
+contextBridge.exposeInMainWorld("electronDirectory", {
+  // 打开文件夹选择框
+  openDirectoryPicker: () => ipcRenderer.invoke("dialog:open-directory"),
+  // 持久化路径
+  persistDirectory: (tag: string, dirPath: string) =>
+    ipcRenderer.invoke("directory:persist", { tag, dirPath }),
+  // 读取缓存路径
+  getPersistedDirectory: (tag: string) =>
+    ipcRenderer.invoke("directory:get-persisted", tag)
+});
 
 setTimeout(removeLoading, 4999);

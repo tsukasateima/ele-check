@@ -8,10 +8,11 @@ import {
   Menu,
   shell,
   ipcMain,
+  BrowserWindow,
   dialog,
-  BrowserWindow
+  type IpcMainInvokeEvent
 } from "electron";
-import * as fs from "fs/promises";
+import fs from "fs/promises";
 // The built directory structure
 //
 // ├─┬ dist-electron
@@ -24,73 +25,6 @@ import * as fs from "fs/promises";
 //
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-// 应用数据存储路径（Electron 专属目录，重启不丢失）
-const STORAGE_FILE = join(app.getPath("userData"), "fs_handles.json");
-// 初始化存储文件（不存在则创建空对象）
-async function initStorageFile() {
-  try {
-    // ✅ 使用 Promise 版 access
-    await fs.access(STORAGE_FILE);
-  } catch {
-    // ✅ 修正：Promise 版 writeFile 传参正确，无类型错误
-    await fs.writeFile(
-      STORAGE_FILE,
-      JSON.stringify({}, null, 2),
-      { encoding: "utf-8" } // 显式指定编码（TS 类型更友好）
-    );
-  }
-}
-
-// 读取所有保存的路径
-async function getStoredPaths(): Promise<Record<string, string>> {
-  await initStorageFile();
-  const content = await fs.readFile(STORAGE_FILE, { encoding: "utf-8" });
-  return JSON.parse(content) || {};
-}
-
-// -------------------------- IPC 处理器（供渲染进程调用） --------------------------
-// 1. 保存路径（无需选择，直接传入路径和 key）
-ipcMain.handle("fs:persistPath", async (_, key: string, path: string) => {
-  try {
-    const storedPaths = await getStoredPaths();
-    storedPaths[key] = path;
-    await fs.writeFile(STORAGE_FILE, JSON.stringify(storedPaths, null, 2), {
-      encoding: "utf-8"
-    });
-    return true;
-  } catch (error) {
-    console.error("保存路径失败：", error);
-    return false;
-  }
-});
-
-// 2. 读取保存的路径
-ipcMain.handle("fs:restorePath", async (_, key: string) => {
-  try {
-    const storedPaths = await getStoredPaths();
-    return storedPaths[key] || null;
-  } catch (error) {
-    console.error("读取路径失败：", error);
-    return null;
-  }
-});
-
-// 3. 删除保存的路径
-ipcMain.handle("fs:removePath", async (_, key: string) => {
-  try {
-    const storedPaths = await getStoredPaths();
-    delete storedPaths[key];
-    await fs.writeFile(
-      STORAGE_FILE,
-      JSON.stringify(storedPaths, null, 2),
-      "utf-8"
-    );
-    return true;
-  } catch (error) {
-    console.error("删除路径失败：", error);
-    return false;
-  }
-});
 process.env.DIST_ELECTRON = join(__dirname, "..");
 process.env.DIST = join(process.env.DIST_ELECTRON, "../dist");
 process.env.PUBLIC = process.env.VITE_DEV_SERVER_URL
@@ -182,7 +116,7 @@ async function createWindow() {
   });
 }
 
-app.whenReady().then(createWindow).then(initStorageFile);
+app.whenReady().then(createWindow);
 
 app.on("window-all-closed", () => {
   win = null;
@@ -274,71 +208,97 @@ ipcMain.handle("open-win", (_, arg) => {
   }
 });
 
-// 在 createWindow 函数外/内添加（建议放在 createWindow 上方）
+// 存储路径：用户数据目录下的 directory-cache.json
+const getCacheFilePath = () => {
+  const userDataPath = app.getPath("userData"); // Electron内置用户数据目录
+  return path.join(userDataPath, "directory-cache.json");
+};
+
 ipcMain.handle("dialog:open-directory", async () => {
   try {
     const result = await dialog.showOpenDialog({
       properties: ["openDirectory"], // 仅允许选择文件夹
-      title: "选择文件夹",
-      defaultPath: process.env.VITE_DEV_SERVER_URL ? "" : app.getPath("desktop") // 兼容开发/生产环境
+      title: "选择目标文件夹",
+      buttonLabel: "确认选择"
     });
-    if (result.canceled) {
-      console.log("用户取消选择文件夹");
-      return null; // 取消选择时返回 null
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return { success: false, path: null };
     }
-    console.log("选中的文件夹路径：", result.filePaths[0]);
-    return result.filePaths[0];
+    return { success: true, path: result.filePaths[0] };
   } catch (error) {
-    console.error("文件夹选择对话框异常：", error);
-    throw new Error(`选择失败：${error.message}`); // 抛出错误让渲染进程捕获
+    console.error("打开文件夹选择框失败：", error);
+    return { success: false, path: null, error: error.message };
   }
 });
-// 注册 fs:persist-path 处理器（持久化路径到文件/本地存储）
-ipcMain.handle("fs:persist-path", async (_, { key, dirPath }) => {
-  try {
-    // 1. 校验参数
-    if (!key || !dirPath) {
-      throw new Error("缺少必要参数：key 或 dirPath");
-    }
-    // 2. 确定持久化文件路径（用 app 自带的用户数据目录，避免权限问题）
-    const userDataPath = app.getPath("userData"); // 跨平台：Windows/macOS/Linux 通用
-    const persistFile = path.join(userDataPath, "path-config.json");
-
-    // 3. 读取现有配置（文件不存在则初始化空对象）
-    let config = {};
+// 2. 持久化文件夹路径（按tag缓存）
+ipcMain.handle(
+  "directory:persist",
+  async (
+    _: IpcMainInvokeEvent,
+    { tag, dirPath }: { tag: string; dirPath: string }
+  ) => {
     try {
-      const fileContent = await fs.readFile(persistFile, "utf-8");
-      config = JSON.parse(fileContent);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-        // 仅忽略“文件不存在”错误，其他错误抛出
-        throw new Error(`读取配置文件失败：${err.message}`);
+      if (!tag || !dirPath) {
+        throw new Error("tag和dirPath不能为空");
       }
-    }
 
-    // 4. 更新配置并写入文件
-    config[key] = dirPath;
-    await fs.writeFile(persistFile, JSON.stringify(config, null, 2), "utf-8");
+      const cacheFile = getCacheFilePath();
+      let cacheData: Record<string, string> = {};
 
-    // 5. 返回成功结果
-    return { success: true, path: dirPath, message: "路径持久化成功" };
-  } catch (error) {
-    console.error("路径持久化失败：", error);
-    throw new Error(`fs:persist-path 执行失败：${error.message}`);
-  }
-});
-// 可选：注册读取持久化路径的处理器（如果需要回显）
-ipcMain.handle("fs:get-persist-path", async (_, key) => {
-  try {
-    const userDataPath = app.getPath("userData");
-    const persistFile = path.join(userDataPath, "path-config.json");
-    const fileContent = await fs.readFile(persistFile, "utf-8");
-    const config = JSON.parse(fileContent);
-    return config[key] || null;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-      return null; // 文件不存在返回 null
+      // 读取现有缓存
+      try {
+        const fileContent = await fs.readFile(cacheFile, "utf-8");
+        cacheData = JSON.parse(fileContent);
+      } catch (err) {
+        // 文件不存在则创建空对象
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      }
+
+      // 更新缓存
+      cacheData[tag] = dirPath;
+      await fs.writeFile(
+        cacheFile,
+        JSON.stringify(cacheData, null, 2),
+        "utf-8"
+      );
+
+      return { success: true, tag, dirPath };
+    } catch (error) {
+      console.error("持久化文件夹路径失败：", error);
+      return { success: false, error: error.message };
     }
-    throw new Error(`读取持久化路径失败：${err.message}`);
   }
-});
+);
+
+// 3. 读取缓存的文件夹路径（按tag读取）
+ipcMain.handle(
+  "directory:get-persisted",
+  async (_: IpcMainInvokeEvent, tag: string) => {
+    try {
+      if (!tag) {
+        throw new Error("tag不能为空");
+      }
+
+      const cacheFile = getCacheFilePath();
+      let cacheData: Record<string, string> = {};
+
+      // 读取缓存文件
+      try {
+        const fileContent = await fs.readFile(cacheFile, "utf-8");
+        cacheData = JSON.parse(fileContent);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      }
+
+      return {
+        success: true,
+        path: cacheData[tag] || null, // 无缓存返回null
+        tag
+      };
+    } catch (error) {
+      console.error("读取缓存路径失败：", error);
+      return { success: false, error: error.message };
+    }
+  }
+);

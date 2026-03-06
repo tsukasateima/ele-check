@@ -3,10 +3,6 @@ import { useRouter } from "vue-router";
 import { computed, onMounted, reactive, Ref, ref } from "vue";
 import { ElMessage } from "element-plus";
 import { getNestedDirectoryHandle } from "@/utils/common/index";
-import {
-  pickAndPersistDirectory,
-  restoreDirectoryHandle
-} from "@/utils/RecursionDrop/storage";
 import { baseTables, resetTables } from "./txtPath";
 import {
   checkCommonCellById,
@@ -51,14 +47,16 @@ onMounted(async () => {
 
   await findAllTxtFiles();
 });
-
+const cachedDir = ref<string | null>(null);
 // 选择文件夹触发方法
 const selectMainFolder = async () => {
-  await pickAndPersistDirectory(
-    mainDirectoryHandle,
-    "mainRecursionDirectoryHandle",
-    { successMessage: "Main 文件夹选择成功,已持久化" }
-  );
+  const tag = "mainRecursionDirectoryHandle"; // 自定义tag
+  const result = await pickAndPersistDirectory(tag);
+  if (result.success) {
+    // 可选：立即读取缓存验证
+    const getResult = await window.electronDirectory.getPersistedDirectory(tag);
+    cachedDir.value = getResult.path;
+  }
 };
 const selectTyFolder = async () => {
   await pickAndPersistDirectory(
